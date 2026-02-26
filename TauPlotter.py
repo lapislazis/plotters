@@ -1,8 +1,12 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 from scipy.optimize import curve_fit
 from pathlib import Path
+
+# Set seaborn style
+sns.set_style("whitegrid")
 
 def plot_lifetime(
     filepaths,
@@ -23,7 +27,9 @@ def plot_lifetime(
     xlim=None,                  # optional: (xmin, xmax) für Darstellung
     ylim=None,                  # optional: (ymin, ymax) für Darstellung
     labels=None,                # optional: list of labels for each dataset
-    time_unit="ns"              # time unit: "ns" (nanosecond), "us" (microsecond), or "ms" (millisecond)
+    time_unit="ns",             # time unit: "ns" (nanosecond), "us" (microsecond), or "ms" (millisecond)
+    palette="Blues",            # Palette: seaborn sequential palette ("Blues", "Greens", "Reds", etc.) or "pyplot" for standard matplotlib colors
+    use_seaborn=True            # Use seaborn palette (True) or standard pyplot colors (False)
 ):
     """
     Plottet eine Zeitreihe aus 'filepath', optional mit monoexponentiellem Fit
@@ -95,8 +101,11 @@ def plot_lifetime(
     # --- Figure/Axes anlegen ---
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    # Color cycle for multiple plots
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    # Use seaborn palette or standard pyplot colors
+    if use_seaborn:
+        colors = sns.color_palette(palette, n_colors=max(n_files, 2))
+    else:
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     taus_out = []
 
@@ -116,8 +125,11 @@ def plot_lifetime(
             label_data = label_list[idx]
 
         # Plot data
-        color = colors[idx % len(colors)]
-        ax.plot(x, y, label=label_data, linewidth=1.0, color=color, alpha=0.6, zorder=2)
+        if use_seaborn:
+            color = colors[idx]
+        else:
+            color = colors[idx % len(colors)]
+        ax.plot(x, y, label=label_data, linewidth=1.0, color=color, alpha=0.9, zorder=2)
 
         tau = None
         tau2 = None
@@ -185,7 +197,7 @@ def plot_lifetime(
 
                 x_smooth2 = np.linspace(x_min2, x_max2, 400)
                 y_smooth2 = monoexp_C0(x_smooth2, A2, tau2)
-                ax.plot(x_smooth2, y_smooth2, color=color, linestyle="-", linewidth=2.5, label=f"{label_data} fit2 (τ={tau2:.3f} {unit_label})", zorder=10)
+                ax.plot(x_smooth2, y_smooth2, color=color, linestyle="--", linewidth=2.5, label=f"{label_data} fit2 (τ={tau2:.3f} {unit_label})", zorder=10)
 
                 # Extrapolations
                 if interpolate and interp_to_y is not None and interp_to_y > 0:
@@ -293,5 +305,10 @@ plot_lifetime(
     interp_to_y=1,
     xlim=(0.75, 10),
     #ylim=(1000, 6000),
-    time_unit="us"
+    time_unit="us",
+    use_seaborn=False,
+    #palette="viridis"
 )
+
+# Palette note: deep is good for qualitative, like comparisons, "Blues", "Reds" are sequentially darker, good for
+# Temp dependent etc, as well as Viridis. All sequential can be reverse with *_r suffix
