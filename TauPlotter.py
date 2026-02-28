@@ -28,8 +28,9 @@ def plot_lifetime(
     ylim=None,                  # optional: (ymin, ymax) für Darstellung
     labels=None,                # optional: list of labels for each dataset
     time_unit="ns",             # time unit: "ns" (nanosecond), "us" (microsecond), or "ms" (millisecond)
-    palette="Blues",            # Palette: seaborn sequential palette ("Blues", "Greens", "Reds", etc.) or "pyplot" for standard matplotlib colors
-    use_seaborn=True            # Use seaborn palette (True) or standard pyplot colors (False)
+    palette=None,            # Palette: seaborn sequential palette ("Blues", "Greens", "Reds", etc.) or "pyplot" for standard matplotlib colors
+    use_seaborn=False,            # Use seaborn palette (True) or standard pyplot colors (False)
+    specalpha=1.0
 ):
     """
     Plottet eine Zeitreihe aus 'filepath', optional mit monoexponentiellem Fit
@@ -129,7 +130,7 @@ def plot_lifetime(
             color = colors[idx]
         else:
             color = colors[idx % len(colors)]
-        ax.plot(x, y, label=label_data, linewidth=1.0, color=color, alpha=0.9, zorder=2)
+        ax.plot(x, y, label=label_data, linewidth=1.0, color=color, alpha=specalpha, zorder=2)
 
         tau = None
         tau2 = None
@@ -197,7 +198,7 @@ def plot_lifetime(
 
                 x_smooth2 = np.linspace(x_min2, x_max2, 400)
                 y_smooth2 = monoexp_C0(x_smooth2, A2, tau2)
-                ax.plot(x_smooth2, y_smooth2, color=color, linestyle="--", linewidth=2.5, label=f"{label_data} fit2 (τ={tau2:.3f} {unit_label})", zorder=10)
+                ax.plot(x_smooth2, y_smooth2, color=color, linestyle="-", linewidth=2.5, label=f"{label_data} fit2 (τ={tau2:.3f} {unit_label})", zorder=10)
 
                 # Extrapolations
                 if interpolate and interp_to_y is not None and interp_to_y > 0:
@@ -254,6 +255,12 @@ def plot_lifetime(
     if log_y:
         ax.set_yscale("log")
 
+    # --- Grid for logarithmic axes ---
+    if log_x or log_y:
+        # Show minor gridlines for better logarithmic representation
+        ax.grid(True, which="major", linestyle="-", linewidth=0.8, alpha=0.7, color="gray")
+        ax.grid(True, which="minor", linestyle=":", linewidth=0.4, alpha=0.3, color="gray")
+    
     # --- Labels / Titel ---
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -291,24 +298,54 @@ def plot_lifetime(
 
 plot_lifetime(
     filepaths=[
-        #"Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260219 tau/DMAC-s2PFL-PN_1e-5M_toluene/2us_Ex340.dat",
-        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260225tau/DMAC-s2PFL-PN_1e-5M_toluene/10us.dat",
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260227tau/260227_DMAC-2sp_DPEPO15wt_film/10us.dat",
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260227tau/260227_DMAC-2sp_DPEPO15wt_film/10us_380.dat"
     ],
     log_y=True,
-    title="DMAC-s2PFL-PN Lifetime",
-    fit=[True],
+    log_x=True,
+    title="15%wt DMAC-s2PFL-PN in DPEPO Film Lifetime",
+    #fit=[True, True],
     #dual_fit=[True, False],
-    fit_range=[(0.88, 1.15)],
+    #fit_range=[(0.88, 6), (0.88, 1.60)],
     #fit_range2=[(0.25, 0.75)],
-    labels=["Ex340nm"],
-    outfile="0225_DMAC_lifetime_10us",
+    labels=["497nm", "380nm"],
+    outfile="0227_DMAC_film_2peaks_loglog",
     interp_to_y=1,
-    xlim=(0.75, 10),
-    #ylim=(1000, 6000),
+    xlim=(0.8, 10),
+    #ylim=(1, 6000),
     time_unit="us",
-    use_seaborn=False,
-    #palette="viridis"
+    use_seaborn=True,
+    palette="muted",
+    specalpha=0.8
 )
 
+# Temperature dependent template
+'''plot_lifetime(
+    filepaths=[
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260226tau/DMAC-2p/250K.dat",
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260226tau/DMAC-2p/260K.dat",
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260226tau/DMAC-2p/270K.dat",
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260226tau/DMAC-2p/280K.dat",
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260226tau/DMAC-2p/290K.dat",
+        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260226tau/DMAC-2p/300K.dat",
+    ],
+    log_y=True,
+    title="Temperature Dependent Lifetime of DMAC-s2PFL-PN in Toluene",
+    fit=[True, True, True, True, True, True],
+    #dual_fit=[True, False],
+    fit_range=[(0.9, 2), (0.9, 2), (0.9, 2), (0.9, 2), (0.9, 2), (0.9, 2)],
+    #fit_range2=[(0.25, 0.75)],
+    labels=["250K", "260K", "270K", "280K", "290K", "300K"],
+    outfile="0226_DMAC_temp_tau_trimmed",
+    interp_to_y=1,
+    xlim=(0.78, 8),
+    ylim=(1, 6000),
+    time_unit="us",
+    use_seaborn=True,
+    palette="icefire",
+    specalpha=0.6
+)'''
+
 # Palette note: deep is good for qualitative, like comparisons, "Blues", "Reds" are sequentially darker, good for
-# Temp dependent etc, as well as Viridis. All sequential can be reverse with *_r suffix
+# Temp dependent etc, as well as Viridis. All sequential can be reverse with "*_r" suffix
+# icefire is nice for cold-hot
