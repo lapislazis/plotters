@@ -1,7 +1,5 @@
 My python stuff adapted from Jean's code from time at adachilab
 
-Oneplotter is for any kind of wavelength spectrum plot with no overlaying, displays a max wavelength
+Specplotter plots absorption/emission/excitation measurements with capability for multiple lines per plot, with different colours and linestyles, and for max annotation.
 
-Twoplotter is for overlaying two spectrum plots, but it should just be combined with oneplotter when I'm less lazy tbh
-
-Tauplotter plots lifetime measurements with capability to do multiple spectra for comparison or time-dependent, and with monoexponential fitting to find lifetime.
+Tauplotter plots lifetime measurements with capability to do multiple spectra for comparison or time-dependent, and with optional mono- or multiexponential fitting to find lifetime and chi uncertainties. Fitting methods adapted from information provided by Edinburgh Instruments. 
