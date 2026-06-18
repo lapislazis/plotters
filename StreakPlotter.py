@@ -9,6 +9,15 @@ import os
 
 # Set seaborn style
 sns.set_style("whitegrid")
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.titlesize": 16,
+    "axes.labelsize": 14,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 12,
+    "legend.title_fontsize": 13,
+})
 
 
 def _load_streak_file(filepath):
@@ -352,7 +361,7 @@ def plot_transient_lifetimes(
         
         ax.set_xlabel(xlabel_text, fontsize=12)
         ax.set_ylabel(ylabel_text, fontsize=12)
-        ax.set_title(title_text, fontsize=14, fontweight='bold')
+        ax.set_title(title_text, fontsize=16)
         
         # Set log scale if requested
         if log_scale:
@@ -758,7 +767,7 @@ def plot_timesliced_spectra(
     else:
         title_text = title
     
-    ax.set_title(title_text, fontsize=14, fontweight='bold')
+    ax.set_title(title_text, fontsize=16)
     
     # Set axis limits if specified
     if xlim is not None:
@@ -1003,7 +1012,7 @@ def plot_2d_heatmap(
     else:
         title_text = title
     
-    ax.set_title(title_text, fontsize=14, fontweight='bold')
+    ax.set_title(title_text, fontsize=16)
     
     plt.tight_layout()
     

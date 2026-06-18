@@ -7,6 +7,15 @@ from pathlib import Path
 
 # Set seaborn style
 sns.set_style("whitegrid")
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.titlesize": 16,
+    "axes.labelsize": 14,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 12,
+    "legend.title_fontsize": 13,
+})
 
 def plot_lifetime(
     filepaths,
@@ -16,14 +25,15 @@ def plot_lifetime(
     xlabel=None,
     ylabel="counts",
     fit=False,
+    fit_order=1,               # number of exponential components; can be scalar or list per-file
     fit_range=(5.0, 12.0),      # (x_min, x_max) fürs Fitting; can be a list per-file
-    fit_range2=None,            # Optional: second fit range (x_min, x_max) für Dual-Fitting; can be list
-    dual_fit=False,             # Enable dual fitting mode with two separate x ranges; can be list
+    show_chi_in_legend=False,   # optionally include reduced chi value in fit legend entries
+    show_tau_avg=False,          # optionally include τavg in fit legend entries
     interpolate=True,
     interp_to_y=1000,            # bis zu welchem y-Wert extrapolieren (Standard: 1 = 10^0)
     outfile=None,               # Name ohne Endung; wenn None -> aus Dateiname abgeleitet
     filetype="png",             # "png" oder "pdf"
-    outdir="Sasaki/Plot_Lifetime",
+    outdir="Plot_Lifetime",
     xlim=None,                  # optional: (xmin, xmax) für Darstellung
     ylim=None,                  # optional: (ymin, ymax) für Darstellung
     labels=None,                # optional: list of labels for each dataset
@@ -33,8 +43,8 @@ def plot_lifetime(
     specalpha=1.0
 ):
     """
-    Plottet eine Zeitreihe aus 'filepath', optional mit monoexponentiellem Fit
-    (C fest = 0) und Extrapolation bis zu einem bestimmten y-Wert.
+    Plottet eine Zeitreihe aus 'filepath', optional mit n-exponentiellem Fit
+    (Summe aus A_i * exp(-t/tau_i), C fest = 0) und Extrapolation bis zu einem bestimmten y-Wert.
 
     Datendatei: 2 Spalten, Komma-separiert, ohne Header.
     Assumes input data is in nanoseconds.
@@ -60,7 +70,7 @@ def plot_lifetime(
         else:
             return [param] * n_files
     
-    # Special handling for fit_range and fit_range2: distinguish between a single range tuple and a list of ranges
+    # Special handling for fit_range: distinguish between a single range tuple and a list of ranges
     def _broadcast_range(param, name, default=None):
         if param is None:
             return [None] * n_files
@@ -82,9 +92,105 @@ def plot_lifetime(
             return [param] * n_files
 
     fit_list = _broadcast_param(fit, "fit", False)
-    dual_fit_list = _broadcast_param(dual_fit, "dual_fit", False)
+    fit_order_list = _broadcast_param(fit_order, "fit_order", 1)
     fit_range_list = _broadcast_range(fit_range, "fit_range", None)
-    fit_range2_list = _broadcast_range(fit_range2, "fit_range2", None)
+
+    # Validate fit order(s)
+    for i, order in enumerate(fit_order_list):
+        if not isinstance(order, (int, np.integer)) or int(order) < 1:
+            raise ValueError(f"fit_order for dataset index {i} must be an integer >= 1, got: {order}")
+        fit_order_list[i] = int(order)
+
+    def multi_exp_decay(xv, *params):
+        order_local = len(params) // 2
+        amps = np.asarray(params[:order_local])
+        taus = np.asarray(params[order_local:])
+        yv = np.zeros_like(np.asarray(xv, dtype=float), dtype=float)
+        for a, t in zip(amps, taus):
+            yv += a * np.exp(-np.asarray(xv, dtype=float) / t)
+        return yv
+
+    def _fit_decay_segment(x_fit, y_fit, order):
+        if len(x_fit) <= 2 * order:
+            raise ValueError(
+                f"Insufficient data points ({len(x_fit)}) for fit_order={order}. Need more than {2*order} points."
+            )
+
+        y_peak = max(float(np.max(y_fit)), 1e-12)
+        x_span = max(float(np.max(x_fit) - np.min(x_fit)), 1e-12)
+
+        amps0 = np.full(order, y_peak / order, dtype=float)
+        tau_min0 = max(x_span / (20.0 * order), 1e-9)
+        tau_max0 = max(x_span * 2.0, 1e-6)
+        taus0 = np.geomspace(tau_min0, tau_max0, order)
+        p0 = np.concatenate([amps0, taus0])
+
+        lower_bounds = np.array([0.0] * order + [1e-12] * order, dtype=float)
+        upper_bounds = np.array([np.inf] * (2 * order), dtype=float)
+
+        params, cov = curve_fit(
+            multi_exp_decay,
+            x_fit,
+            y_fit,
+            p0=p0,
+            bounds=(lower_bounds, upper_bounds),
+            maxfev=200000,
+        )
+
+        amps = np.asarray(params[:order], dtype=float)
+        taus = np.asarray(params[order:], dtype=float)
+
+        # Sort by lifetime for consistent reporting
+        sort_idx = np.argsort(taus)
+        taus = taus[sort_idx]
+        amps = amps[sort_idx]
+        params_sorted = np.concatenate([amps, taus])
+
+        y_pred = multi_exp_decay(x_fit, *params_sorted)
+        residual = y_fit - y_pred
+        # Reduced chi-square-like metric with Poisson-style weighting
+        variance = np.clip(np.abs(y_pred), 1.0, None)
+        chi2 = float(np.sum((residual ** 2) / variance))
+        dof = max(len(x_fit) - 2 * order, 1)
+        chi_red = chi2 / dof
+
+        amp_sum = float(np.sum(amps))
+        tau_avg = float(np.sum(amps * taus) / amp_sum) if amp_sum > 0 else np.nan
+
+        return {
+            "amps": amps,
+            "taus": taus,
+            "params": params_sorted,
+            "cov": cov,
+            "chi2": chi2,
+            "chi_red": chi_red,
+            "tau_avg": tau_avg,
+        }
+
+    def _estimate_x_target(amps, taus, y_target, x_start):
+        if y_target is None or y_target <= 0:
+            return None
+
+        def model(xv):
+            return float(np.sum(amps * np.exp(-xv / taus)))
+
+        if model(x_start) <= y_target:
+            return None
+
+        x_hi = x_start + max(taus) * 20.0
+        for _ in range(8):
+            if model(x_hi) <= y_target:
+                break
+            x_hi += max(taus) * 20.0
+        if model(x_hi) > y_target:
+            return None
+
+        x_grid = np.linspace(x_start, x_hi, 1200)
+        y_grid = np.array([model(xx) for xx in x_grid])
+        idx_cross = np.where(y_grid <= y_target)[0]
+        if len(idx_cross) == 0:
+            return None
+        return float(x_grid[idx_cross[0]])
     
     # --- Validate and convert time units ---
     valid_units = {"ns": 1.0, "us": 1000.0, "ms": 1e6}
@@ -111,8 +217,21 @@ def plot_lifetime(
     taus_out = []
 
     for idx, filepath in enumerate(file_list):
-        # Load data
-        df = pd.read_csv(filepath, sep=",", header=None, comment=";")
+        # Load data (robust path handling for workspace-relative and prefixed paths)
+        filepath_resolved = filepath
+        if not filepath_resolved.exists():
+            prefixed_parts = filepath.parts
+            if len(prefixed_parts) > 1 and prefixed_parts[0] == Path.cwd().name:
+                candidate = Path(*prefixed_parts[1:])
+                if candidate.exists():
+                    filepath_resolved = candidate
+        if not filepath_resolved.exists():
+            raise FileNotFoundError(
+                f"Could not find data file: {filepath}. "
+                f"Tried as given and with leading '{Path.cwd().name}/' removed."
+            )
+
+        df = pd.read_csv(filepath_resolved, sep=",", header=None, comment=";")
         x = df.iloc[:, 0].to_numpy() / conversion_factor  # Convert from ns to desired unit
         y = df.iloc[:, 1].to_numpy()
 
@@ -125,129 +244,64 @@ def plot_lifetime(
                 raise ValueError("'labels' must be a list with the same length as filepaths")
             label_data = label_list[idx]
 
-        # Plot data
+        # Determine per-file fit parameters
+        fit_i = fit_list[idx]
+        fit_order_i = fit_order_list[idx]
+        frange_i = fit_range_list[idx]
+
+        # Plot data; hide raw trace legend entry when a fit legend entry will be shown
         if use_seaborn:
             color = colors[idx]
         else:
             color = colors[idx % len(colors)]
-        ax.plot(x, y, label=label_data, linewidth=1.0, color=color, alpha=specalpha, zorder=2)
+        data_label = "_nolegend_" if fit_i else label_data
+        ax.plot(x, y, label=data_label, linewidth=1.0, color=color, alpha=specalpha, zorder=2)
 
-        tau = None
-        tau2 = None
-
-        # Determine per-file fit parameters
-        fit_i = fit_list[idx]
-        dual_fit_i = dual_fit_list[idx]
-        frange_i = fit_range_list[idx]
-        frange2_i = fit_range2_list[idx]
-
-        # --- Validate dual_fit parameters for this dataset (only when fitting is enabled) ---
-        if fit_i and dual_fit_i:
-            if frange2_i is None:
-                raise ValueError(f"dual_fit=True for {filepath} requires fit_range2 to be specified")
-            if not isinstance(frange2_i, (tuple, list)) or len(frange2_i) != 2:
-                raise ValueError(f"fit_range2 must be a tuple/list of (x_min, x_max), got {frange2_i}")
-            if frange2_i[0] >= frange2_i[1]:
-                raise ValueError(f"fit_range2: x_min must be less than x_max for {filepath}")
-            # Warn if ranges overlap
-            if frange_i is not None:
-                if not (frange_i[1] < frange2_i[0] or frange2_i[1] < frange_i[0]):
-                    print(f"Warning for {filepath}: fit_range and fit_range2 overlap. Consider using separate, non-overlapping ranges.")
         if fit_i:
-            def monoexp_C0(xv, A, tau):
-                return A * np.exp(-xv / tau)
+            if frange_i is None:
+                raise ValueError("fit_range must be specified for datasets with fit=True")
+            x_min, x_max = frange_i
+            mask = (x >= x_min) & (x <= x_max)
+            x_fit = x[mask]
+            y_fit = y[mask]
+            if len(x_fit) < 2:
+                raise ValueError(f"Insufficient data points in fit_range ({x_min}, {x_max}) for {filepath}")
 
-            # Validate fit ranges for this dataset
-            if dual_fit_i:
-                x_min1, x_max1 = frange_i
-                x_min2, x_max2 = frange2_i
+            fitres = _fit_decay_segment(x_fit, y_fit, fit_order_i)
+            amps = fitres["amps"]
+            taus = fitres["taus"]
 
-                # First fit
-                mask1 = (x >= x_min1) & (x <= x_max1)
-                x_fit1 = x[mask1]
-                y_fit1 = y[mask1]
-                if len(x_fit1) < 2:
-                    raise ValueError(f"Insufficient data points in fit_range ({x_min1}, {x_max1}) for {filepath}")
+            tau_text = ", ".join([f"tau{k+1}={tv:.6f}" for k, tv in enumerate(taus)])
+            print(
+                f"{filepath.name} - fit (order={fit_order_i}): {tau_text}, "
+                f"tau_avg={fitres['tau_avg']:.6f} ({time_unit}), chi_red={fitres['chi_red']:.6g}"
+            )
 
-                # Second fit
-                mask2 = (x >= x_min2) & (x <= x_max2)
-                x_fit2 = x[mask2]
-                y_fit2 = y[mask2]
-                if len(x_fit2) < 2:
-                    raise ValueError(f"Insufficient data points in fit_range2 ({x_min2}, {x_max2}) for {filepath}")
+            x_smooth = np.linspace(x_min, x_max, 400)
+            y_smooth = multi_exp_decay(x_smooth, *fitres["params"])
+            unit_label = "μs" if time_unit == "us" else time_unit
+            legend_tau = ", ".join([f"τ{k+1}={tv:.3f}" for k, tv in enumerate(taus)])
+            label_parts = [legend_tau]
+            if show_tau_avg:
+                label_parts.append(f"τavg={fitres['tau_avg']:.3f} {unit_label}")
+            if show_chi_in_legend:
+                label_parts.append(f"χr={fitres['chi_red']:.3g}")
+            label_fit = f"{label_data} ({', '.join(label_parts)})"
+            ax.plot(x_smooth, y_smooth, color=color, linestyle="-", linewidth=2.5, label=label_fit, zorder=10)
 
-                A0_1 = y_fit1.max()
-                tau0_1 = (x_max1 - x_min1) / 2.0 if (x_max1 > x_min1) else 1.0
-                p0_1 = [A0_1, tau0_1]
-                params1, cov1 = curve_fit(monoexp_C0, x_fit1, y_fit1, p0=p0_1, maxfev=50000)
-                A1, tau = params1
-                print(f"{filepath.name} - fit1: A={A1:.3f}, tau={tau:.6f} ({time_unit})")
+            if interpolate and interp_to_y is not None and interp_to_y > 0:
+                x_target = _estimate_x_target(amps, taus, interp_to_y, x_max)
+                if x_target is not None and x_target > x_max:
+                    x_ext = np.linspace(x_max, x_target, 400)
+                    y_ext = multi_exp_decay(x_ext, *fitres["params"])
+                    ax.plot(x_ext, y_ext, color=color, linestyle="--", linewidth=1.5, zorder=8)
 
-                A0_2 = y_fit2.max()
-                tau0_2 = (x_max2 - x_min2) / 2.0 if (x_max2 > x_min2) else 1.0
-                p0_2 = [A0_2, tau0_2]
-                params2, cov2 = curve_fit(monoexp_C0, x_fit2, y_fit2, p0=p0_2, maxfev=50000)
-                A2, tau2 = params2
-                print(f"{filepath.name} - fit2: A={A2:.3f}, tau={tau2:.6f} ({time_unit})")
-
-                # Plot fits for this dataset using dataset color
-                unit_label = "μs" if time_unit == "us" else time_unit
-                x_smooth1 = np.linspace(x_min1, x_max1, 400)
-                y_smooth1 = monoexp_C0(x_smooth1, A1, tau)
-                ax.plot(x_smooth1, y_smooth1, color=color, linestyle="-", linewidth=2.5, label=f"{label_data} fit1 (τ={tau:.3f} {unit_label})", zorder=10)
-
-                x_smooth2 = np.linspace(x_min2, x_max2, 400)
-                y_smooth2 = monoexp_C0(x_smooth2, A2, tau2)
-                ax.plot(x_smooth2, y_smooth2, color=color, linestyle="-", linewidth=2.5, label=f"{label_data} fit2 (τ={tau2:.3f} {unit_label})", zorder=10)
-
-                # Extrapolations
-                if interpolate and interp_to_y is not None and interp_to_y > 0:
-                    if A1 > interp_to_y:
-                        x_target1 = tau * np.log(A1 / interp_to_y)
-                        if x_target1 > x_max1:
-                            x_ext1 = np.linspace(x_max1, x_target1, 400)
-                            y_ext1 = monoexp_C0(x_ext1, A1, tau)
-                            ax.plot(x_ext1, y_ext1, color=color, linestyle="--", linewidth=1.5, zorder=8)
-                    if A2 > interp_to_y:
-                        x_target2 = tau2 * np.log(A2 / interp_to_y)
-                        if x_target2 > x_max2:
-                            x_ext2 = np.linspace(x_max2, x_target2, 400)
-                            y_ext2 = monoexp_C0(x_ext2, A2, tau2)
-                            ax.plot(x_ext2, y_ext2, color=color, linestyle=(0, (1,1)), linewidth=1.5, zorder=8)
-
-                taus_out.append((tau, tau2))
-
-            else:
-                if frange_i is None:
-                    raise ValueError("fit_range must be specified for datasets with fit=True")
-                x_min, x_max = frange_i
-                mask = (x >= x_min) & (x <= x_max)
-                x_fit = x[mask]
-                y_fit = y[mask]
-                if len(x_fit) < 2:
-                    raise ValueError(f"Insufficient data points in fit_range ({x_min}, {x_max}) for {filepath}")
-
-                A0 = y_fit.max()
-                tau0 = (x_max - x_min) / 2.0 if (x_max > x_min) else 1.0
-                p0 = [A0, tau0]
-                params, cov = curve_fit(monoexp_C0, x_fit, y_fit, p0=p0, maxfev=50000)
-                A, tau = params
-                print(f"{filepath.name} - fit: A={A:.3f}, tau={tau:.6f} ({time_unit})")
-
-                x_smooth = np.linspace(x_min, x_max, 400)
-                y_smooth = monoexp_C0(x_smooth, A, tau)
-                unit_label = "μs" if time_unit == "us" else time_unit
-                ax.plot(x_smooth, y_smooth, color=color, linestyle="-", linewidth=2.5, label=f"{label_data} fit (τ={tau:.3f} {unit_label})", zorder=10)
-
-                if interpolate and interp_to_y is not None and interp_to_y > 0:
-                    if A > interp_to_y:
-                        x_target = tau * np.log(A / interp_to_y)
-                        if x_target > x_max:
-                            x_ext = np.linspace(x_max, x_target, 400)
-                            y_ext = monoexp_C0(x_ext, A, tau)
-                            ax.plot(x_ext, y_ext, color=color, linestyle="--", linewidth=1.5, zorder=8)
-
-                taus_out.append(tau)
+            taus_out.append({
+                "taus": taus.tolist(),
+                "amps": amps.tolist(),
+                "tau_avg": fitres["tau_avg"],
+                "chi_red": fitres["chi_red"],
+            })
 
     # --- Achsenskalierung ---
     if log_x:
@@ -276,11 +330,11 @@ def plot_lifetime(
     # Kein Abstand links/rechts
     ax.margins(x=0)
 
-    ax.legend()
+    ax.legend(fontsize=11)
 
     # --- Speichern ---
     outdir = Path(outdir)
-    outdir.mkdir(exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
 
     if outfile is None:
         # Derive outfile from concatenated stems
@@ -288,8 +342,16 @@ def plot_lifetime(
         outfile = stems + "_lifetime"
 
     savepath = outdir / f"{outfile}.{filetype}"
-    plt.savefig(savepath, dpi=300, bbox_inches="tight")
-    print(f"Plot gespeichert unter: {savepath.resolve()}")
+    should_save = True
+    if savepath.exists():
+        resp = input(f"File exists: {savepath.resolve()}\nOverwrite? Type Y to confirm: ")
+        if resp.strip() != "Y":
+            should_save = False
+            print(f"Skipped saving (overwrite not confirmed): {savepath.resolve()}")
+
+    if should_save:
+        plt.savefig(savepath, dpi=300, bbox_inches="tight")
+        print(f"Plot gespeichert unter: {savepath.resolve()}")
 
     plt.show()
 
@@ -298,21 +360,21 @@ def plot_lifetime(
 
 plot_lifetime(
     filepaths=[
-        "Sasaki/DMAC-s2PFL-PN/260219 opt DMAC-s2PFL-PN 1e-5M toluene/260219 tau/DMAC-s2PFL-PN_1e-5M_toluene/200ns_Ex340.dat",
+        "DMAC-s2PFL-PN/20260610tau/s2pfl_degassed/2us.dat"
     ],
     log_y=True,
     #log_x=True,
-    title="DMAC-s2PFL-PN in 1E-5 Toluene 200ns",
+    title="Degassed DMAC-s2PFL-PN in Toluene - 2us",
     fit=[True],
-    dual_fit=[True],
-    fit_range=[(20, 33)],
-    fit_range2=[(65, 100)],
-    labels=["DMAC-s2PFL-PN"],
-    outfile="0219_DMAC_sol_200ns",
+    fit_order=[1],
+    fit_range=[(0.175, 0.75)],
+    labels=["DMAc-s2PFL-PN degassed"],
+    outfile="0610_DMAC_degassed_2us",
     interp_to_y=1,
-    xlim=(15.6, 200),
-    ylim=(250, 6200),
-    time_unit="ns",
+    xlim=(0.15, 2.0),
+    ylim=(1, 1500),
+    time_unit="us",
+    show_chi_in_legend=True,
     use_seaborn=True,
     palette="muted",
     specalpha=0.8
@@ -321,28 +383,26 @@ plot_lifetime(
 # Temperature dependent template
 '''plot_lifetime(
     filepaths=[
-        "Sasaki/DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film including 300K-2/250K.dat",
-        "Sasaki/DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film including 300K-2/260K.dat",
-        "Sasaki/DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film including 300K-2/270K.dat",
-        "Sasaki/DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film including 300K-2/280K.dat",
-        "Sasaki/DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film including 300K-2/290K.dat",
-        "Sasaki/DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film including 300K-2/300K-2.dat",
+        "DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film/250K.dat",
+        "DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film/260K.dat",
+        "DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film/270K.dat",
+        "DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film/280K.dat",
+        "DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film/290K.dat",
+        "DMAC-s2PFL-PN/260228tau/15wt%DMAC-s2PFL-PN DPEPO film/300K.dat",
     ],
     log_y=True,
-    title="Temperature Dependent Lifetime of 15%wt DMAC-s2PFL-PN in DPEPO Film",
+    title="Temperature Dependent Lifetime of 1E-5M DMAC-s2PFL-PN in Toluene",
     fit=[True, True, True, True, True, True],
-    #dual_fit=[True, False],
-    fit_range=[(0.9, 2), (0.9, 2), (0.9, 2), (0.9, 2), (0.9, 2), (0.9, 2)],
-    #fit_range2=[(0.25, 0.75)],
+    fit_range=[(0.9, 3), (0.9, 3), (0.9, 3), (0.9, 3), (0.9, 3), (0.9, 3)],
     labels=["250K", "260K", "270K", "280K", "290K", "300K"],
-    outfile="0228_DMAC_temp_tau",
+    outfile="0228_DMAC_temp_tau_REPORT",
     interp_to_y=1,
     xlim=(0.71, 6),
-    #ylim=(1, 6000),
+    ylim=(1, 7000),
     time_unit="us",
     use_seaborn=True,
     palette="icefire",
-    specalpha=0.6
+    specalpha=0.7
 )'''
 
 # Palette note: deep is good for qualitative, like comparisons, "Blues", "Reds" are sequentially darker, good for

@@ -4,6 +4,7 @@ import seaborn as sns
 from pathlib import Path
 import os
 import numpy as np
+from matplotlib import colors as mcolors
 
 # set seaborn style to match TauPlotter
 sns.set_style("whitegrid")
@@ -27,10 +28,11 @@ def plot_spectra(paths,
                  outfile=None,        # nur Dateiname ohne Endung
                  filetype="png",     # "png" oder "pdf"
                  xlim=None,           # z.B. (300, 800) oder None
-                 ylim=None,           # z.B. (0, 1) oder None
+                 ylim=None,           # z.B. (0, 1) or None
                  annotate_max=False,
                  outdir="Plot_Spectra",
                  palette=None,
+                 skip_first_color=True,
                  use_seaborn=False,
                  linestyles=None,
                  linewidth=1.5,
@@ -55,14 +57,12 @@ def plot_spectra(paths,
         - use_seaborn (bool): Use seaborn color palettes.
         - files_per_palette (int): Number of files to use each palette for (default: 3).
         - linestyle_cycle (bool): If True, cycle through linestyles independently of palette behavior.
-        - linestyles (str or list): Line style(s) to use when not cycling. If a list is provided,
-            the first element is used for all lines unless linestyle_cycle=True.
-        - linestyles_cycle_list (list): List of linestyles to cycle through.
-          Default: ["-", "--", "-.", ":"]
+    - linestyles_cycle_list (list): List of linestyles to cycle through. 
+      Default: ["-", "--", "-.", ":"]
         - first_declared_on_top (bool): If True, files listed first are drawn on top.
-        - clean_plot (bool): If True, generate a graphics-clean plot with no legend,
-            no peak annotations, no title, and no axis label text. Axis tick numbers
-            remain visible.
+                - clean_plot (bool): If True, generate a graphics-clean plot with no legend,
+                        no peak annotations, no title, and no axis label text. Axis tick numbers
+                        remain visible.
     """
 
     def _load_file(path):
@@ -98,6 +98,14 @@ def plot_spectra(paths,
         
         return np.array(x_vals), np.array(y_vals)
 
+    def _drop_brightest_rgb_list(rgb_list):
+        """Return a new list with the brightest (highest luminance) color removed."""
+        if not rgb_list:
+            return rgb_list
+        lums = [0.2126 * r + 0.7152 * g + 0.0722 * b for (r, g, b) in rgb_list]
+        idx = int(np.argmax(lums))
+        return [c for i, c in enumerate(rgb_list) if i != idx]
+
     # Accept single path or list
     if isinstance(paths, (str, Path)):
         path_list = [paths]
@@ -105,6 +113,14 @@ def plot_spectra(paths,
         path_list = [Path(p) for p in paths]
 
     n = len(path_list)
+
+    # Allow annotate_max to be specified per spectrum
+    if isinstance(annotate_max, (list, tuple)):
+        if len(annotate_max) != n:
+            raise ValueError("'annotate_max' list must have the same length as 'paths'.")
+        annotate_max_flags = [bool(v) for v in annotate_max]
+    else:
+        annotate_max_flags = [bool(annotate_max)] * n
 
     # Determine palette mode (explicit palette cycling only)
     palette_list = None
@@ -124,10 +140,6 @@ def plot_spectra(paths,
     if linestyles_cycle_list is None:
         linestyles_cycle_list = ["-", "--", "-.", ":"]
 
-    # Default linestyle for non-cycling mode
-    if linestyles is None:
-        linestyles = "-"
-
     # Farben
     if use_seaborn:
         if palette_cycle:
@@ -137,55 +149,58 @@ def plot_spectra(paths,
                 raise ValueError("When palette_cycle=False, 'palette' must be a single palette name (str) or None.")
             if palette is None:
                 palette = "muted"
-            colors = sns.color_palette(palette, n_colors=max(n, 2))
+            # Allow skipping the visually brightest color in the palette if requested
+            if skip_first_color:
+                pal_all = sns.color_palette(palette, n_colors=max(n, 2) + 1)
+                colors = _drop_brightest_rgb_list(pal_all)
+            else:
+                colors = sns.color_palette(palette, n_colors=max(n, 2))
     else:
-        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        # Matplotlib default cycle returns hex strings; convert to RGB tuples
+        mpl_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        mpl_rgb = [mcolors.to_rgb(c) for c in mpl_colors]
+        if skip_first_color and len(mpl_rgb) > 1:
+            mpl_rgb = _drop_brightest_rgb_list(mpl_rgb)
+        colors = mpl_rgb
 
-    # Dateien laden (defer normalization until xlim is known)
+    # linestyles default (non-cycling fallback)
+    if linestyles is None:
+        linestyles = ["-", "--", "-.", ":"]
+
+    # Dateien laden and optionally normalize
     data = []
     for p in path_list:
         x, y = _load_file(p)
         data.append((Path(p), x, y))
 
-    # Normalize based on xlim window if specified, otherwise global bounds
     if normalize:
         for i, (p, x, y) in enumerate(data):
-            if getattr(y, "size", 0) > 0:
+            if getattr(y, "size", 0) > 0 and not np.all(np.isnan(y)):
+                # If xlim is declared, compute the normalization factor only
+                # from the data points inside that x-range. Otherwise use
+                # the full range.
                 if xlim is not None:
-                    # Normalize to max/min within xlim window
-                    mask = (x >= xlim[0]) & (x <= xlim[1])
-                    if np.any(mask):
-                        y_window = y[mask]
-                        y_min = np.nanmin(y_window)
-                        y_max = np.nanmax(y_window)
-                        if y_max > y_min:
-                            y_norm = (y - y_min) / (y_max - y_min)
+                    try:
+                        xmin, xmax = xlim
+                        mask = (x >= xmin) & (x <= xmax)
+                        masked_y = y[mask]
+                        if masked_y.size > 0 and not np.all(np.isnan(masked_y)):
+                            maxval = np.nanmax(masked_y)
                         else:
-                            y_norm = y / np.nanmax(np.abs(y)) if np.nanmax(np.abs(y)) != 0 else y
-                    else:
-                        y_norm = y / np.nanmax(np.abs(y)) if np.nanmax(np.abs(y)) != 0 else y
+                            maxval = np.nanmax(y)
+                    except Exception:
+                        maxval = np.nanmax(y)
                 else:
-                    # Normalize to global max/min
-                    y_min = np.nanmin(y)
-                    y_max = np.nanmax(y)
-                    if y_max > y_min:
-                        y_norm = (y - y_min) / (y_max - y_min)
-                    else:
-                        y_norm = y / np.nanmax(np.abs(y)) if np.nanmax(np.abs(y)) != 0 else y
-                data[i] = (p, x, y_norm)
+                    maxval = np.nanmax(y)
+
+                if maxval != 0:
+                    newy = y / maxval
+                    # For normalized plots, ensure no values fall below 0
+                    newy = np.clip(newy, a_min=0, a_max=None)
+                    data[i] = (p, x, newy)
 
     # Plot
     plt.figure(figsize=(8, 5))
-    ax = plt.gca()
-    annotation_boxes = []
-
-    def _bbox_overlap(b1, b2):
-        return not (
-            b1[0] + b1[2] < b2[0] or
-            b1[0] > b2[0] + b2[2] or
-            b1[1] + b1[3] < b2[1] or
-            b1[1] > b2[1] + b2[3]
-        )
 
     legend_labels = []
     for i, (p, x, y) in enumerate(data):
@@ -194,7 +209,12 @@ def plot_spectra(paths,
             palette_idx = i // files_per_palette
             position_in_palette = i % files_per_palette
             current_palette = palette_list[palette_idx % len(palette_list)]
-            palette_colors = sns.color_palette(current_palette, n_colors=max(files_per_palette, 2))
+            # Generate palette colors, optionally skipping the visually brightest one
+            if skip_first_color:
+                pal_all = sns.color_palette(current_palette, n_colors=max(files_per_palette, 2) + 1)
+                palette_colors = _drop_brightest_rgb_list(pal_all)
+            else:
+                palette_colors = sns.color_palette(current_palette, n_colors=max(files_per_palette, 2))
             color = palette_colors[position_in_palette]
             linestyle_idx = position_in_palette
         else:
@@ -204,10 +224,7 @@ def plot_spectra(paths,
         if linestyle_cycle:
             linestyle = linestyles_cycle_list[linestyle_idx % len(linestyles_cycle_list)]
         else:
-            if isinstance(linestyles, (list, tuple)):
-                linestyle = linestyles[0]
-            else:
-                linestyle = linestyles
+            linestyle = linestyles[i % len(linestyles)]
         # determine label
         if labels is not None:
             if len(labels) != n:
@@ -220,50 +237,38 @@ def plot_spectra(paths,
         plt.plot(x, y, label=lab, color=color, linewidth=linewidth, linestyle=linestyle, zorder=zorder)
 
         # annotate peak wavelength directly on the trace (same visual style as StreakPlotter)
-        if annotate_max and not clean_plot:
+        if annotate_max_flags[i] and not clean_plot:
             try:
                 if getattr(y, "size", 0) > 0 and not np.all(np.isnan(y)):
-                    # Find peak within xlim window if specified, else global
+                    # If xlim is declared, find the peak only within that range.
                     if xlim is not None:
-                        mask = (x >= xlim[0]) & (x <= xlim[1])
-                        if np.any(mask):
-                            y_window = y[mask]
-                            idx_window = int(np.nanargmax(y_window))
-                            idx = np.where(mask)[0][idx_window]
-                        else:
-                            idx = None
+                        try:
+                            xmin, xmax = xlim
+                            mask = (x >= xmin) & (x <= xmax)
+                            indices = np.where(mask)[0]
+                            if indices.size > 0:
+                                sub_y = y[indices]
+                                if not np.all(np.isnan(sub_y)):
+                                    sub_idx = int(np.nanargmax(sub_y))
+                                    idx = int(indices[sub_idx])
+                                else:
+                                    # No valid data in range; skip annotation
+                                    idx = None
+                            else:
+                                idx = None
+                        except Exception:
+                            idx = int(np.nanargmax(y))
                     else:
                         idx = int(np.nanargmax(y))
-                    
+
                     if idx is not None:
                         peak_x = float(x[idx])
                         peak_y = float(y[idx])
-                        text = f"{peak_x:.1f} nm"
-                        offsets = [(5, 5), (5, 20), (5, 35), (5, -20), (5, -35), (5, 50), (5, -50), (5, 65), (5, -65)]
-                        dpi = ax.figure.dpi
-                        pt2px = dpi / 72.0
-                        text_width = max(40, len(text) * 6)
-                        text_height = 14 * 1.2
-                        x_disp, y_disp = ax.transData.transform((peak_x, peak_y))
-                        chosen_offset = None
-                        for dx, dy in offsets:
-                            dx_disp = dx * pt2px
-                            dy_disp = dy * pt2px
-                            bbox = (x_disp + dx_disp, y_disp + dy_disp, text_width * pt2px, text_height * pt2px)
-                            if not any(_bbox_overlap(bbox, existing) for existing in annotation_boxes):
-                                chosen_offset = (dx, dy)
-                                annotation_boxes.append(bbox)
-                                break
-                        if chosen_offset is None:
-                            chosen_offset = (5, 5)
-                            dx_disp = chosen_offset[0] * pt2px
-                            dy_disp = chosen_offset[1] * pt2px
-                            annotation_boxes.append((x_disp + dx_disp, y_disp + dy_disp, text_width * pt2px, text_height * pt2px))
-                        ax.annotate(text,
+                        plt.annotate(f"{peak_x:.1f} nm",
                                      xy=(peak_x, peak_y),
-                                     xytext=chosen_offset,
+                                     xytext=(5, 5),
                                      textcoords='offset points',
-                                     fontsize=12,
+                                     fontsize=9,
                                      fontweight='bold',
                                      color=color)
             except Exception:
@@ -291,11 +296,29 @@ def plot_spectra(paths,
     # Achsenbereich setzen
     if xlim is not None:
         plt.xlim(xlim)
+
+    # Y-axis limits: use provided `ylim`, otherwise autoscale tightly
     if ylim is not None:
         plt.ylim(ylim)
+    else:
+        # compute a sensible ymax from plotted data (after normalization/clipping)
+        y_max = 0.0
+        for (_p, _x, _y) in data:
+            if getattr(_y, "size", 0) > 0 and not np.all(np.isnan(_y)):
+                try:
+                    cur = float(np.nanmax(_y))
+                    if cur > y_max:
+                        y_max = cur
+                except Exception:
+                    continue
+        if y_max > 0:
+            ymax = y_max * 1.05
+        else:
+            ymax = 1.0
+        plt.ylim(0, ymax)
 
-    # Kein Abstand am Rand der x-Achse
-    plt.margins(x=0)
+    # Kein Abstand am Rand der x- und y-Achse
+    plt.margins(x=0, y=0)
 
     # Speichern
     outdir = Path(outdir)
@@ -343,23 +366,24 @@ def plot_spectra(paths,
 
 #Triple plot setup
 plot_spectra(paths=[
-    "3 - DCNP/Photophysical/PL/20260224flu/260224-DCNP-Flu1.txt",
-    "3 - DCNP/Photophysical/UV/20260224abs/26.02.24.DCNPAbs1.txt"
+    "DMAC-s2PFL-PN/20260610flu/s2pfl_degassed_exc290.txt",
+    "DMAC-s2PFL-PN/20260608flu/s2pfl_exc290_1.txt"
 ],
-    labels=["Sol. PL", "Sol. Absorption"],
-    title="Normalised PL/Abs of DCNP in Toluene",
-    xlim=(380, 600),
-    ylim=(0, 1.1),
-    annotate_max=True,
-    outfile="0224_DCNP_sol_absemphos",
+    labels=["Degassed PL Flu.", "Aerated PL Flu."],
+    title="PL intensity comparison of Degassed/Aerated DMAC-s2PFL-PN in Toluene",
+    xlim=(370, 600),
+    #ylim=(0, 1.10),
+    annotate_max=[False, False],
+    outfile="0610_DMAC_sol_intcomp",
     use_seaborn=True,
-    ylabel="Normalised Intensity (a.u.)",
-    palette_cycle=False,
+    ylabel="Intensity",
+    #palette_cycle=True,
     palette="Blues_r",
-    #files_per_palette=1,
-    #value = 83.5,
-    #value_label = "PLQY (460nm)",
+    #files_per_palette=3,
+    #value = 6.5,
+    #value_label = "PLQY exc. 290nm (%)",
     linestyle_cycle=True,
-    normalize=True
+    normalize=False,
     #clean_plot=True
+    skip_first_color=True
 )

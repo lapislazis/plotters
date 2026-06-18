@@ -10,6 +10,15 @@ import seaborn as sns
 
 # Match plotting style used by TauPlotter/SpecPlotter.
 sns.set_style("whitegrid")
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.titlesize": 16,
+    "axes.labelsize": 14,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 12,
+    "legend.title_fontsize": 13,
+})
 
 
 def _read_text_with_japanese_encodings(path):
